@@ -249,15 +249,15 @@
           // 清空p标签内容但保留标签
           const messageParagraph = aiMessageElement.querySelector('p');
           messageParagraph.textContent = '';
-          // 应用打字机效果
-          typewriterEffect(responseText, messageParagraph);
+          // 应用打字机效果，设置isFormatted为true以支持格式化内容
+          typewriterEffect(responseText, messageParagraph, 30, null, true);
         } else {
           // 错误消息也使用打字机效果
           const errorText = `错误: ${data.error}`;
           const messageParagraph = aiMessageElement.querySelector('p');
           messageParagraph.className = 'text-red-500';
           messageParagraph.textContent = '';
-          typewriterEffect(errorText, messageParagraph);
+          typewriterEffect(errorText, messageParagraph, 30, null, false);
         }
       } catch (error) {
         // 异常消息也使用打字机效果
@@ -265,7 +265,7 @@
         const messageParagraph = aiMessageElement.querySelector('p');
         messageParagraph.className = 'text-red-500';
         messageParagraph.textContent = '';
-        typewriterEffect(errorText, messageParagraph);
+        typewriterEffect(errorText, messageParagraph, 30, null, false);
       }
     }
 
@@ -308,13 +308,118 @@
     }
 
     /**
+     * 格式化响应内容，支持代码块和表格等
+     * @param {string} text - 原始文本
+     * @returns {string} 格式化后的HTML
+     */
+    function formatResponseContent(text) {
+      // 安全处理：转义HTML特殊字符，但保留特定格式
+      let safeText = text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+      
+      // 处理代码块
+      safeText = safeText.replace(/```([^`]*?)```/gs, (match, code) => {
+        // 提取语言标识（如果有）
+        const parts = code.split('\n');
+        let language = '';
+        let codeContent = '';
+        
+        if (parts.length > 0 && !parts[0].trim().startsWith('\n')) {
+          language = parts[0].trim();
+          codeContent = parts.slice(1).join('\n');
+        } else {
+          codeContent = code;
+        }
+        
+        return `<div class="my-4 bg-gray-900 rounded-md overflow-hidden">
+          <div class="bg-gray-800 px-4 py-1 text-xs text-gray-400">${language || 'code'}</div>
+          <pre class="p-4 text-gray-300 overflow-x-auto text-sm">${codeContent}</pre>
+        </div>`;
+      });
+      
+      // 处理单行代码
+      safeText = safeText.replace(/`([^`]*)`/g, '<code class="bg-gray-200 text-gray-800 px-1 rounded text-sm">$1</code>');
+      
+      // 处理表格
+      // 简化的表格处理，实际使用可能需要更复杂的解析
+      if (safeText.includes('|') && safeText.includes('-|')) {
+        // 简单检测是否包含表格
+        const lines = safeText.split('\n');
+        let tableStart = -1;
+        let tableEnd = -1;
+        
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].includes('-|')) {
+            tableStart = i - 1;
+            // 找表格结束位置
+            for (let j = i + 1; j < lines.length; j++) {
+              if (!lines[j].includes('|') || lines[j].trim() === '') {
+                tableEnd = j - 1;
+                break;
+              }
+            }
+            break;
+          }
+        }
+        
+        if (tableStart >= 0 && tableEnd >= 0) {
+          const tableLines = lines.slice(tableStart, tableEnd + 1);
+          const tableHeader = tableLines[0].split('|').map(cell => cell.trim());
+          const tableData = tableLines.slice(2).map(row => 
+            row.split('|').map(cell => cell.trim())
+          );
+          
+          // 构建表格HTML
+          let tableHtml = '<div class="my-4 overflow-x-auto">';
+          tableHtml += '<table class="min-w-full bg-white border border-gray-200">';
+          
+          // 表头
+          tableHtml += '<thead>';
+          tableHtml += '<tr>';
+          tableHeader.forEach(cell => {
+            if (cell) tableHtml += `<th class="py-2 px-4 border-b text-left">${cell}</th>`;
+          });
+          tableHtml += '</tr>';
+          tableHtml += '</thead>';
+          
+          // 表体
+          tableHtml += '<tbody>';
+          tableData.forEach(row => {
+            tableHtml += '<tr>';
+            row.forEach(cell => {
+              if (cell) tableHtml += `<td class="py-2 px-4 border-b">${cell}</td>`;
+            });
+            tableHtml += '</tr>';
+          });
+          tableHtml += '</tbody>';
+          
+          tableHtml += '</table>';
+          tableHtml += '</div>';
+          
+          // 替换原文本中的表格部分
+          const beforeTable = lines.slice(0, tableStart).join('\n');
+          const afterTable = lines.slice(tableEnd + 1).join('\n');
+          safeText = [beforeTable, tableHtml, afterTable].filter(Boolean).join('\n');
+        }
+      }
+      
+      // 处理换行符
+      safeText = safeText.replace(/\n/g, '<br>');
+      
+      return safeText;
+    }
+    
+    /**
      * 打字机效果函数
      * @param {string} text - 要显示的文本
      * @param {HTMLElement} element - 目标DOM元素
      * @param {number} speed - 打字速度（毫秒/字符）
      * @param {Function} callback - 完成后的回调函数
+     * @param {boolean} isFormatted - 是否包含格式化内容
      */
-    function typewriterEffect(text, element, speed = 30, callback = null) {
+    function typewriterEffect(text, element, speed = 30, callback = null, isFormatted = false) {
       let index = 0;
       element.textContent = '';
       
@@ -323,30 +428,69 @@
       cursor.className = 'inline-block ml-1 w-1 h-4 bg-gray-600 animate-pulse';
       element.appendChild(cursor);
       
-      function typeNextChar() {
-        if (index < text.length) {
-          // 移除光标，添加字符，再添加光标
-          element.removeChild(cursor);
-          element.textContent += text.charAt(index);
-          element.appendChild(cursor);
-          index++;
-          
-          // 根据字符调整速度，标点符号停留时间更长
-          const char = text.charAt(index - 1);
-          const currentSpeed = ['.', '!', '?'].includes(char) ? speed * 3 : 
-                             [',', ';', ':'].includes(char) ? speed * 2 : speed;
-          
-          setTimeout(typeNextChar, currentSpeed);
-        } else {
-          // 完成后移除光标
-          element.removeChild(cursor);
-          if (callback && typeof callback === 'function') {
-            callback();
+      // 对于格式化内容，使用累积方式处理
+      if (isFormatted) {
+        let accumulatedText = '';
+        
+        function typeNextChar() {
+          if (index < text.length) {
+            // 移除光标
+            element.removeChild(cursor);
+            
+            // 累积文本并格式化
+            accumulatedText += text.charAt(index);
+            const formattedContent = formatResponseContent(accumulatedText);
+            element.innerHTML = formattedContent;
+            
+            // 重新添加光标
+            element.appendChild(cursor);
+            index++;
+            
+            // 根据字符调整速度
+            const char = text.charAt(index - 1);
+            const currentSpeed = ['.', '!', '?'].includes(char) ? speed * 3 : 
+                               [',', ';', ':'].includes(char) ? speed * 2 : speed;
+            
+            setTimeout(typeNextChar, currentSpeed);
+          } else {
+            // 完成后移除光标
+            if (cursor.parentNode) {
+              cursor.parentNode.removeChild(cursor);
+            }
+            if (callback && typeof callback === 'function') {
+              callback();
+            }
           }
         }
+        
+        typeNextChar();
+      } else {
+        // 原始的简单文本处理方式
+        function typeNextChar() {
+          if (index < text.length) {
+            // 移除光标，添加字符，再添加光标
+            element.removeChild(cursor);
+            element.textContent += text.charAt(index);
+            element.appendChild(cursor);
+            index++;
+            
+            // 根据字符调整速度
+            const char = text.charAt(index - 1);
+            const currentSpeed = ['.', '!', '?'].includes(char) ? speed * 3 : 
+                               [',', ';', ':'].includes(char) ? speed * 2 : speed;
+            
+            setTimeout(typeNextChar, currentSpeed);
+          } else {
+            // 完成后移除光标
+            element.removeChild(cursor);
+            if (callback && typeof callback === 'function') {
+              callback();
+            }
+          }
+        }
+        
+        typeNextChar();
       }
-      
-      typeNextChar();
     }
 
     // 清除聊天历史
@@ -468,21 +612,24 @@
               const events = parseSSE(chunk);
               
               // 处理每个事件
-              events.forEach(event => {
-                if (event.chunk) {
-                  accumulatedText += event.chunk;
-                  
-                  // 更新显示（移除光标，更新文本，重新添加光标）
-                  if (cursor.parentNode) {
-                    messageParagraph.removeChild(cursor);
-                  }
-                  messageParagraph.textContent = accumulatedText;
-                  messageParagraph.appendChild(cursor);
-                  
-                  // 自动滚动到底部
-                  messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                }
-              });
+          events.forEach(event => {
+            if (event.chunk) {
+              accumulatedText += event.chunk;
+              
+              // 更新显示（移除光标，更新文本，重新添加光标）
+              if (cursor.parentNode) {
+                messageParagraph.removeChild(cursor);
+              }
+              
+              // 添加代码高亮和格式化支持
+              const formattedContent = formatResponseContent(accumulatedText);
+              messageParagraph.innerHTML = formattedContent;
+              messageParagraph.appendChild(cursor);
+              
+              // 自动滚动到底部
+              messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            }
+          });
             }
           }
           
@@ -497,7 +644,7 @@
           // 显示错误消息
           messageParagraph.className = 'text-red-500';
           messageParagraph.textContent = '';
-          typewriterEffect(`请求失败: ${error.message}`, messageParagraph);
+          typewriterEffect(`请求失败: ${error.message}`, messageParagraph, 30, null, false);
         } finally {
           setLoading(false);
         }
